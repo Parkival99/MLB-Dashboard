@@ -9,7 +9,7 @@ st.set_page_config(
     page_title="MLB Stats Hub",
     page_icon="⚾",
     layout="wide",
-    initial_sidebar_state="expanded",
+    initial_sidebar_state="collapsed",
 )
 
 # ---------------------------------------------------------------------------
@@ -29,49 +29,66 @@ st.markdown("""
     footer {visibility: hidden;}
     header {visibility: hidden;}
 
-    /* ---- Mobile: convert sidebar to top nav ---- */
-    @media (max-width: 768px) {
-        section[data-testid="stSidebar"] {
-            min-width: 100% !important;
-            width: 100% !important;
-            position: relative !important;
-            top: 0 !important;
-            background: #0F0F23 !important;
-        }
-        section[data-testid="stSidebar"] .stRadio > div {
-            display: flex !important;
-            flex-direction: row !important;
-            flex-wrap: wrap !important;
-            gap: 6px !important;
-        }
-        section[data-testid="stSidebar"] .stRadio label {
-            flex: 1 1 auto !important;
-            text-align: center !important;
-            min-width: 80px !important;
-            padding: 10px 8px !important;
-            font-size: 0.85rem !important;
-        }
-        .game-card .team-name { font-size: 0.9rem !important; }
-        .game-card .score { font-size: 1.4rem !important; }
-        .player-row { flex-direction: column !important; gap: 6px !important; }
-    }
-
-    /* ---- Sidebar ---- */
+    /* ---- Hide sidebar completely ---- */
     section[data-testid="stSidebar"] {
-        background: linear-gradient(180deg, #0F0F23 0%, #1A1A2E 100%);
-        border-right: 1px solid #2A2A4A;
+        display: none !important;
     }
 
-    section[data-testid="stSidebar"] .stRadio label {
+    /* ---- Top nav bar ---- */
+    .top-nav {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 8px 0;
+        margin-bottom: 1rem;
+        border-bottom: 1px solid #2A2A4A;
+        flex-wrap: wrap;
+        gap: 8px;
+    }
+    .top-nav .brand {
+        font-size: 1.3rem;
+        font-weight: 700;
         color: #EAEAEA;
-        font-weight: 500;
-        padding: 8px 12px;
-        border-radius: 8px;
-        transition: all 0.2s ease;
+        white-space: nowrap;
     }
 
-    section[data-testid="stSidebar"] .stRadio label:hover {
-        background: rgba(230, 57, 70, 0.15);
+    /* Restyle the segmented control (radio) as pill nav */
+    div[data-testid="stHorizontalBlock"] .stRadio > div {
+        display: flex !important;
+        flex-direction: row !important;
+        gap: 6px !important;
+        flex-wrap: wrap !important;
+    }
+    div[data-testid="stHorizontalBlock"] .stRadio > div > label {
+        background: #1A1A2E !important;
+        border: 1px solid #2A2A4A !important;
+        border-radius: 10px !important;
+        padding: 10px 28px !important;
+        color: #EAEAEA !important;
+        font-weight: 600 !important;
+        font-size: 1.05rem !important;
+        cursor: pointer !important;
+        transition: all 0.2s ease !important;
+        white-space: nowrap !important;
+    }
+    div[data-testid="stHorizontalBlock"] .stRadio > div > label:hover {
+        background: rgba(230, 57, 70, 0.15) !important;
+        border-color: #E63946 !important;
+    }
+    div[data-testid="stHorizontalBlock"] .stRadio > div > label[data-checked="true"],
+    div[data-testid="stHorizontalBlock"] .stRadio > div > label:has(input:checked) {
+        background: #E63946 !important;
+        border-color: #E63946 !important;
+        color: white !important;
+    }
+
+    /* ---- Mobile tweaks ---- */
+    @media (max-width: 768px) {
+        .player-row { flex-wrap: wrap !important; gap: 6px !important; }
+        div[data-testid="stHorizontalBlock"] .stRadio > div > label {
+            padding: 8px 16px !important;
+            font-size: 0.9rem !important;
+        }
     }
 
     /* ---- Cards / Metric containers ---- */
@@ -262,26 +279,28 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ---------------------------------------------------------------------------
-# Sidebar navigation
+# Top navigation bar
 # ---------------------------------------------------------------------------
-with st.sidebar:
-    st.markdown("# ⚾ MLB Stats Hub")
-    st.markdown('<div class="custom-divider"></div>', unsafe_allow_html=True)
+nav_left, nav_right = st.columns([5, 1])
 
-    page = st.radio(
-        "Navigate",
-        ["Dashboard", "Batting Stats", "Pitching Stats", "Standings"],
-        label_visibility="collapsed",
-    )
+with nav_left:
+    st.markdown('<span style="font-size:2rem;font-weight:700;color:#EAEAEA;letter-spacing:-0.5px;">⚾ MLB Stats Hub</span>'
+                '&nbsp;&nbsp;<span class="refresh-badge">Auto-refreshes</span>',
+                unsafe_allow_html=True)
 
-    st.markdown('<div class="custom-divider"></div>', unsafe_allow_html=True)
-    st.markdown(
-        '<span class="refresh-badge">Auto-refreshes every few minutes</span>',
-        unsafe_allow_html=True,
-    )
-    if st.button("🔄 Refresh Now"):
+with nav_right:
+    if st.button("🔄 Refresh"):
         st.cache_data.clear()
         st.rerun()
+
+page = st.radio(
+    "Navigate",
+    ["Dashboard", "Batting Stats", "Pitching Stats", "Standings"],
+    horizontal=True,
+    label_visibility="collapsed",
+)
+
+st.markdown('<div class="custom-divider"></div>', unsafe_allow_html=True)
 
 # ---------------------------------------------------------------------------
 # Page routing
