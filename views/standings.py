@@ -4,7 +4,7 @@ import streamlit as st
 import pandas as pd
 from data_loader import get_standings
 
-# Primary team colors (hex)
+# Primary team colors (hex) for row background
 TEAM_COLORS = {
     "Arizona Diamondbacks": "#A71930",
     "Atlanta Braves": "#CE1141",
@@ -21,13 +21,13 @@ TEAM_COLORS = {
     "Los Angeles Angels": "#BA0021",
     "Los Angeles Dodgers": "#005A9C",
     "Miami Marlins": "#00A3E0",
-    "Milwaukee Brewers": "#FFC52F",
+    "Milwaukee Brewers": "#12284B",
     "Minnesota Twins": "#002B5C",
     "New York Mets": "#002D72",
     "New York Yankees": "#003087",
     "Oakland Athletics": "#003831",
     "Philadelphia Phillies": "#E81828",
-    "Pittsburgh Pirates": "#FDB827",
+    "Pittsburgh Pirates": "#27251F",
     "San Diego Padres": "#2F241D",
     "San Francisco Giants": "#FD5A1E",
     "Seattle Mariners": "#0C2C56",
@@ -36,15 +36,19 @@ TEAM_COLORS = {
     "Texas Rangers": "#003278",
     "Toronto Blue Jays": "#134A8E",
     "Washington Nationals": "#AB0003",
-    # Sacramento Athletics alias
     "Athletics": "#003831",
 }
 
 
-def _color_team_name(team_name: str) -> str:
-    """Return HTML span with team's primary color."""
-    color = TEAM_COLORS.get(team_name, "#EAEAEA")
-    return f'<span style="color:{color}; font-weight:600;">{team_name}</span>'
+def _get_team_color(team_name: str) -> str:
+    """Get team's primary color, with fuzzy matching for short names."""
+    if team_name in TEAM_COLORS:
+        return TEAM_COLORS[team_name]
+    # Try partial match (API sometimes returns just "Guardians" etc.)
+    for full_name, color in TEAM_COLORS.items():
+        if team_name in full_name or full_name.endswith(team_name):
+            return color
+    return "#2A2A4A"
 
 
 def render():
@@ -72,11 +76,8 @@ def render():
             div_df = standings[standings["Division"] == div].copy()
             if div_df.empty:
                 continue
-
             short_name = div.replace("American League", "AL")
             st.markdown(f"**{short_name}**")
-
-            # Build HTML table with team colors
             _render_standings_table(div_df)
 
     with nl_col:
@@ -85,43 +86,42 @@ def render():
             div_df = standings[standings["Division"] == div].copy()
             if div_df.empty:
                 continue
-
             short_name = div.replace("National League", "NL")
             st.markdown(f"**{short_name}**")
-
             _render_standings_table(div_df)
 
 
 def _render_standings_table(div_df: pd.DataFrame):
-    """Render a division standings table with colored team names."""
+    """Render a division standings table with team-colored row backgrounds and white text."""
     rows_html = ""
     for _, row in div_df.iterrows():
-        team_colored = _color_team_name(row["Team"])
+        bg = _get_team_color(row["Team"])
+        cell_style = f'padding:8px 12px; color:#FFFFFF; font-weight:500;'
         rows_html += (
-            f'<tr>'
-            f'<td style="padding:6px 12px; border-bottom:1px solid #2A2A4A;">{team_colored}</td>'
-            f'<td style="padding:6px 8px; border-bottom:1px solid #2A2A4A; text-align:center;">{row["W"]}</td>'
-            f'<td style="padding:6px 8px; border-bottom:1px solid #2A2A4A; text-align:center;">{row["L"]}</td>'
-            f'<td style="padding:6px 8px; border-bottom:1px solid #2A2A4A; text-align:center;">{row["PCT"]:.3f}</td>'
-            f'<td style="padding:6px 8px; border-bottom:1px solid #2A2A4A; text-align:center;">{row["GB"]}</td>'
-            f'<td style="padding:6px 8px; border-bottom:1px solid #2A2A4A; text-align:center;">{row["Streak"]}</td>'
+            f'<tr style="background-color:{bg};">'
+            f'<td style="{cell_style} font-weight:600;">{row["Team"]}</td>'
+            f'<td style="{cell_style} text-align:center;">{row["W"]}</td>'
+            f'<td style="{cell_style} text-align:center;">{row["L"]}</td>'
+            f'<td style="{cell_style} text-align:center;">{row["PCT"]:.3f}</td>'
+            f'<td style="{cell_style} text-align:center;">{row["GB"]}</td>'
+            f'<td style="{cell_style} text-align:center;">{row["Streak"]}</td>'
             f'</tr>'
         )
 
+    header_style = 'padding:8px 12px; text-align:center; color:#8888AA; font-size:0.75rem; text-transform:uppercase; letter-spacing:1px; background:#0F0F23;'
     header = (
-        '<th style="padding:8px 12px; text-align:left; color:#8888AA; font-size:0.75rem; text-transform:uppercase; letter-spacing:1px;">Team</th>'
-        '<th style="padding:8px 8px; text-align:center; color:#8888AA; font-size:0.75rem; text-transform:uppercase;">W</th>'
-        '<th style="padding:8px 8px; text-align:center; color:#8888AA; font-size:0.75rem; text-transform:uppercase;">L</th>'
-        '<th style="padding:8px 8px; text-align:center; color:#8888AA; font-size:0.75rem; text-transform:uppercase;">PCT</th>'
-        '<th style="padding:8px 8px; text-align:center; color:#8888AA; font-size:0.75rem; text-transform:uppercase;">GB</th>'
-        '<th style="padding:8px 8px; text-align:center; color:#8888AA; font-size:0.75rem; text-transform:uppercase;">Streak</th>'
+        f'<th style="{header_style} text-align:left;">Team</th>'
+        f'<th style="{header_style}">W</th>'
+        f'<th style="{header_style}">L</th>'
+        f'<th style="{header_style}">PCT</th>'
+        f'<th style="{header_style}">GB</th>'
+        f'<th style="{header_style}">Streak</th>'
     )
 
     html = (
         f'<table style="width:100%; border-collapse:collapse; margin-bottom:20px; '
-        f'background:linear-gradient(135deg, #1A1A2E 0%, #16213E 100%); border-radius:10px; '
-        f'overflow:hidden; border:1px solid #2A2A4A;">'
-        f'<thead><tr style="border-bottom:2px solid #E63946;">{header}</tr></thead>'
+        f'border-radius:10px; overflow:hidden; border:1px solid #2A2A4A;">'
+        f'<thead><tr>{header}</tr></thead>'
         f'<tbody>{rows_html}</tbody>'
         f'</table>'
     )

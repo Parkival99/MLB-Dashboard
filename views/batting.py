@@ -1,4 +1,4 @@
-"""Batting Stats page — Statcast advanced + MLB API traditional with date range filtering."""
+"""Batting Stats page — MLB API traditional + Statcast advanced with date range filtering."""
 
 import datetime
 import streamlit as st
@@ -10,58 +10,16 @@ from data_loader import get_mlb_batting_stats, get_statcast_data, compute_battin
 def render():
     st.markdown('<div class="section-header">Batting Leaderboard</div>', unsafe_allow_html=True)
 
-    # --- Date range controls ---
-    col1, col2, col3 = st.columns([2, 2, 3])
-
     today = datetime.date.today()
     season_start = datetime.date(today.year, 3, 20)
-
-    with col1:
-        preset = st.selectbox(
-            "Quick Range",
-            ["Custom", "Today", "Last 3 Days", "Last 7 Days", "Last 14 Days", "Last 30 Days", "Full Season"],
-        )
-
-    if preset == "Today":
-        start_date = today
-        end_date = today
-    elif preset == "Last 3 Days":
-        start_date = today - datetime.timedelta(days=3)
-        end_date = today
-    elif preset == "Last 7 Days":
-        start_date = today - datetime.timedelta(days=7)
-        end_date = today
-    elif preset == "Last 14 Days":
-        start_date = today - datetime.timedelta(days=14)
-        end_date = today
-    elif preset == "Last 30 Days":
-        start_date = today - datetime.timedelta(days=30)
-        end_date = today
-    elif preset == "Full Season":
-        start_date = season_start
-        end_date = today
-    else:
-        start_date = None
-        end_date = None
-
-    with col2:
-        start_date = st.date_input("Start Date", value=start_date or season_start, max_value=today)
-    with col3:
-        end_date = st.date_input("End Date", value=end_date or today, max_value=today)
-
-    if start_date > end_date:
-        st.error("Start date must be before end date.")
-        return
-
-    min_pa = st.slider("Minimum Plate Appearances", 0, 200, 10, step=5)
-
-    st.markdown('<div class="custom-divider"></div>', unsafe_allow_html=True)
 
     source = st.radio(
         "Data Source",
         ["MLB (Traditional)", "Statcast (Advanced)"],
         horizontal=True,
     )
+
+    st.markdown('<div class="custom-divider"></div>', unsafe_allow_html=True)
 
     if source == "MLB (Traditional)":
         st.caption("Full-season totals from the MLB Stats API.")
@@ -73,11 +31,21 @@ def render():
             st.warning("No MLB batting stats available.")
             return
 
+        # Filters side by side
+        f1, f2 = st.columns(2)
+        with f1:
+            min_pa = st.slider("Minimum Plate Appearances", 0, 200, 10, step=5)
+        with f2:
+            teams = sorted(df["Team"].dropna().unique().tolist())
+            team_filter = st.multiselect("Filter by Team", options=teams, default=[], key="bat_team_mlb")
+
         if min_pa > 0:
             df = df[df["PA"] >= min_pa]
+        if team_filter:
+            df = df[df["Team"].isin(team_filter)]
 
         if df.empty:
-            st.info(f"No batters with {min_pa}+ PA. Try lowering the minimum.")
+            st.info("No batters match the current filters.")
             return
 
         display = ["Name", "Team", "G", "PA", "AB", "H", "2B", "3B", "HR", "RBI", "BB", "SO", "SB", "AVG", "OBP", "SLG", "OPS"]
@@ -95,7 +63,41 @@ def render():
         )
 
     else:
-        # Statcast advanced stats with date range
+        # --- Statcast: date range controls ---
+        col1, col2, col3 = st.columns([2, 2, 3])
+
+        with col1:
+            preset = st.selectbox(
+                "Quick Range",
+                ["Custom", "Today", "Last 3 Days", "Last 7 Days", "Last 14 Days", "Last 30 Days", "Full Season"],
+            )
+
+        if preset == "Today":
+            start_date, end_date = today, today
+        elif preset == "Last 3 Days":
+            start_date, end_date = today - datetime.timedelta(days=3), today
+        elif preset == "Last 7 Days":
+            start_date, end_date = today - datetime.timedelta(days=7), today
+        elif preset == "Last 14 Days":
+            start_date, end_date = today - datetime.timedelta(days=14), today
+        elif preset == "Last 30 Days":
+            start_date, end_date = today - datetime.timedelta(days=30), today
+        elif preset == "Full Season":
+            start_date, end_date = season_start, today
+        else:
+            start_date, end_date = None, None
+
+        with col2:
+            start_date = st.date_input("Start Date", value=start_date or season_start, max_value=today)
+        with col3:
+            end_date = st.date_input("End Date", value=end_date or today, max_value=today)
+
+        if start_date > end_date:
+            st.error("Start date must be before end date.")
+            return
+
+        min_pa = st.slider("Minimum Plate Appearances", 0, 200, 10, step=5, key="bat_pa_sc")
+
         with st.spinner("Pulling Statcast data..."):
             sc = get_statcast_data(start_date.isoformat(), end_date.isoformat())
 
@@ -108,13 +110,20 @@ def render():
             st.warning("No batting events found in this date range.")
             return
 
+        # Team filter for Statcast
+        if "Team" in leaders.columns:
+            sc_teams = sorted(leaders["Team"].dropna().unique().tolist())
+            sc_team_filter = st.multiselect("Filter by Team", options=sc_teams, default=[], key="bat_team_sc")
+            if sc_team_filter:
+                leaders = leaders[leaders["Team"].isin(sc_team_filter)]
+
         leaders = leaders[leaders["PA"] >= min_pa]
 
         if leaders.empty:
-            st.info(f"No batters with {min_pa}+ PA in this range. Try lowering the minimum.")
+            st.info("No batters match the current filters.")
             return
 
-        display_cols = ["Name", "PA", "H", "HR", "BB", "SO", "AVG", "OBP", "SLG", "OPS", "AVG_EV", "MAX_EV"]
+        display_cols = ["Name", "Team", "PA", "H", "HR", "BB", "SO", "AVG", "OBP", "SLG", "OPS", "AVG_EV", "MAX_EV"]
         available = [c for c in display_cols if c in leaders.columns]
 
         st.dataframe(

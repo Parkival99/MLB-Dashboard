@@ -1,4 +1,4 @@
-"""Pitching Stats page — K/9, whiff rate, ERA with date range filtering."""
+"""Pitching Stats page — MLB API traditional + Statcast K/9/whiff with date range filtering."""
 
 import datetime
 import streamlit as st
@@ -10,50 +10,8 @@ from data_loader import get_mlb_pitching_stats, get_statcast_data, compute_pitch
 def render():
     st.markdown('<div class="section-header">Pitching Leaderboard</div>', unsafe_allow_html=True)
 
-    col1, col2, col3 = st.columns([2, 2, 3])
-
     today = datetime.date.today()
     season_start = datetime.date(today.year, 3, 20)
-
-    with col1:
-        preset = st.selectbox(
-            "Quick Range",
-            ["Custom", "Today", "Last 3 Days", "Last 7 Days", "Last 14 Days", "Last 30 Days", "Full Season"],
-            key="pitch_preset",
-        )
-
-    if preset == "Today":
-        start_date = today
-        end_date = today
-    elif preset == "Last 3 Days":
-        start_date = today - datetime.timedelta(days=3)
-        end_date = today
-    elif preset == "Last 7 Days":
-        start_date = today - datetime.timedelta(days=7)
-        end_date = today
-    elif preset == "Last 14 Days":
-        start_date = today - datetime.timedelta(days=14)
-        end_date = today
-    elif preset == "Last 30 Days":
-        start_date = today - datetime.timedelta(days=30)
-        end_date = today
-    elif preset == "Full Season":
-        start_date = season_start
-        end_date = today
-    else:
-        start_date = None
-        end_date = None
-
-    with col2:
-        start_date = st.date_input("Start Date", value=start_date or season_start, max_value=today, key="pitch_start")
-    with col3:
-        end_date = st.date_input("End Date", value=end_date or today, max_value=today, key="pitch_end")
-
-    if start_date > end_date:
-        st.error("Start date must be before end date.")
-        return
-
-    st.markdown('<div class="custom-divider"></div>', unsafe_allow_html=True)
 
     source = st.radio(
         "Data Source",
@@ -62,9 +20,10 @@ def render():
         key="pitch_source",
     )
 
+    st.markdown('<div class="custom-divider"></div>', unsafe_allow_html=True)
+
     if source == "MLB (Traditional)":
         st.caption("Full-season totals from the MLB Stats API.")
-        min_ip = st.slider("Minimum IP", 0, 100, 5, step=5, key="pitch_min_ip")
 
         with st.spinner("Pulling MLB season pitching stats..."):
             df = get_mlb_pitching_stats(today.year)
@@ -73,11 +32,20 @@ def render():
             st.warning("No MLB pitching stats available.")
             return
 
+        f1, f2 = st.columns(2)
+        with f1:
+            min_ip = st.slider("Minimum IP", 0, 100, 5, step=5, key="pitch_min_ip")
+        with f2:
+            teams = sorted(df["Team"].dropna().unique().tolist())
+            team_filter = st.multiselect("Filter by Team", options=teams, default=[], key="pitch_team_mlb")
+
         if min_ip > 0:
             df = df[df["IP"] >= min_ip]
+        if team_filter:
+            df = df[df["Team"].isin(team_filter)]
 
         if df.empty:
-            st.info(f"No pitchers with {min_ip}+ IP. Try lowering the minimum.")
+            st.info("No pitchers match the current filters.")
             return
 
         display = ["Name", "Team", "W", "L", "ERA", "G", "GS", "IP", "SO", "BB", "H", "HR", "WHIP", "K9", "BB9", "HR9", "AVG"]
@@ -98,7 +66,40 @@ def render():
         )
 
     else:
-        # Statcast advanced pitching with date range
+        # --- Statcast: date range controls ---
+        col1, col2, col3 = st.columns([2, 2, 3])
+
+        with col1:
+            preset = st.selectbox(
+                "Quick Range",
+                ["Custom", "Today", "Last 3 Days", "Last 7 Days", "Last 14 Days", "Last 30 Days", "Full Season"],
+                key="pitch_preset",
+            )
+
+        if preset == "Today":
+            start_date, end_date = today, today
+        elif preset == "Last 3 Days":
+            start_date, end_date = today - datetime.timedelta(days=3), today
+        elif preset == "Last 7 Days":
+            start_date, end_date = today - datetime.timedelta(days=7), today
+        elif preset == "Last 14 Days":
+            start_date, end_date = today - datetime.timedelta(days=14), today
+        elif preset == "Last 30 Days":
+            start_date, end_date = today - datetime.timedelta(days=30), today
+        elif preset == "Full Season":
+            start_date, end_date = season_start, today
+        else:
+            start_date, end_date = None, None
+
+        with col2:
+            start_date = st.date_input("Start Date", value=start_date or season_start, max_value=today, key="pitch_start")
+        with col3:
+            end_date = st.date_input("End Date", value=end_date or today, max_value=today, key="pitch_end")
+
+        if start_date > end_date:
+            st.error("Start date must be before end date.")
+            return
+
         min_pitches = st.slider("Minimum Pitches Thrown", 0, 500, 50, step=25, key="pitch_min")
 
         with st.spinner("Pulling Statcast pitching data..."):
@@ -113,13 +114,20 @@ def render():
             st.warning("No pitching data found for this range.")
             return
 
+        # Team filter for Statcast
+        if "Team" in leaders.columns:
+            sc_teams = sorted(leaders["Team"].dropna().unique().tolist())
+            sc_team_filter = st.multiselect("Filter by Team", options=sc_teams, default=[], key="pitch_team_sc")
+            if sc_team_filter:
+                leaders = leaders[leaders["Team"].isin(sc_team_filter)]
+
         leaders = leaders[leaders["TotalPitches"] >= min_pitches]
 
         if leaders.empty:
-            st.info(f"No pitchers with {min_pitches}+ pitches. Try lowering the minimum.")
+            st.info("No pitchers match the current filters.")
             return
 
-        display_cols = ["Name", "TotalPitches", "BF", "IP_est", "ERA", "WHIP", "SwStr", "WhiffRate", "Strikeouts", "K9", "H", "BB", "HR"]
+        display_cols = ["Name", "Team", "TotalPitches", "BF", "IP_est", "ERA", "WHIP", "SwStr", "WhiffRate", "Strikeouts", "K9", "H", "BB", "HR"]
         available = [c for c in display_cols if c in leaders.columns]
 
         st.dataframe(
