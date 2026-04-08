@@ -261,14 +261,14 @@ with st.sidebar:
 # Page routing
 # ---------------------------------------------------------------------------
 if page == "Dashboard":
-    from pages import dashboard
+    from views import dashboard
     dashboard.render()
 elif page == "Batting Stats":
-    from pages import batting
+    from views import batting
     batting.render()
 elif page == "Pitching Stats":
-    from pages import pitching
+    from views import pitching
     pitching.render()
 elif page == "Standings":
-    from pages import standings
+    from views import standings
     standings.render()

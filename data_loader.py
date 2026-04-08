@@ -1,18 +1,14 @@
 """
 Data loading and caching layer for MLB stats.
-Uses pybaseball for Statcast/FanGraphs data and MLB Stats API for live info.
+Uses pybaseball for Statcast data and MLB Stats API for everything else.
+FanGraphs scraping is unreliable (403s), so traditional stats come from MLB API.
 """
 
 import datetime
 import requests
 import pandas as pd
 import streamlit as st
-from pybaseball import (
-    batting_stats,
-    pitching_stats,
-    statcast,
-    cache,
-)
+from pybaseball import statcast, cache
 
 # Enable pybaseball caching to avoid repeated scrapes
 cache.enable()
@@ -21,38 +17,39 @@ MLB_API_BASE = "https://statsapi.mlb.com/api/v1"
 
 
 # ---------------------------------------------------------------------------
-# Batting
+# Player name lookup (Statcast only has pitcher names, not batter names)
 # ---------------------------------------------------------------------------
 
-@st.cache_data(ttl=900, show_spinner=False)  # 15-min cache
-def get_batting_stats(start_date: str, end_date: str, qual: int = 0) -> pd.DataFrame:
-    """
-    Pull FanGraphs batting leaderboard for the given date range.
-    qual=0 means no plate-appearance minimum (we filter in the UI).
-    """
-    try:
-        start_dt = datetime.datetime.strptime(start_date, "%Y-%m-%d")
-        end_dt = datetime.datetime.strptime(end_date, "%Y-%m-%d")
-        start_year = start_dt.year
-        end_year = end_dt.year
+@st.cache_data(ttl=86400, show_spinner=False)  # cache for 24 hours
+def lookup_player_names(player_ids: list[int]) -> dict[int, str]:
+    """Batch lookup player names from MLB Stats API."""
+    if not player_ids:
+        return {}
 
-        df = batting_stats(start_year, end_year, qual=qual)
+    names = {}
+    # API accepts up to ~100 IDs at a time
+    batch_size = 100
+    for i in range(0, len(player_ids), batch_size):
+        batch = player_ids[i:i + batch_size]
+        ids_str = ",".join(str(pid) for pid in batch)
+        url = f"{MLB_API_BASE}/people?personIds={ids_str}"
+        try:
+            resp = requests.get(url, timeout=10)
+            resp.raise_for_status()
+            for person in resp.json().get("people", []):
+                names[person["id"]] = person["fullName"]
+        except Exception:
+            pass
+    return names
 
-        if df is None or df.empty:
-            return pd.DataFrame()
 
-        # Standardize column names
-        df.columns = [c.strip() for c in df.columns]
-
-        return df
-    except Exception as e:
-        st.warning(f"Could not load batting stats: {e}")
-        return pd.DataFrame()
-
+# ---------------------------------------------------------------------------
+# Statcast data
+# ---------------------------------------------------------------------------
 
 @st.cache_data(ttl=600, show_spinner=False)
-def get_statcast_batting(start_date: str, end_date: str) -> pd.DataFrame:
-    """Pull Statcast pitch-level data for advanced batting metrics."""
+def get_statcast_data(start_date: str, end_date: str) -> pd.DataFrame:
+    """Pull Statcast pitch-level data."""
     try:
         df = statcast(start_dt=start_date, end_dt=end_date)
         if df is None or df.empty:
@@ -63,13 +60,31 @@ def get_statcast_batting(start_date: str, end_date: str) -> pd.DataFrame:
         return pd.DataFrame()
 
 
+# ---------------------------------------------------------------------------
+# Batting — from Statcast
+# ---------------------------------------------------------------------------
+
 def compute_batting_leaders(sc_df: pd.DataFrame) -> pd.DataFrame:
-    """Aggregate Statcast pitch-level data into per-batter stats."""
+    """Aggregate Statcast pitch-level data into per-batter stats.
+    Filters out pitchers and resolves correct batter names via MLB API.
+    """
     if sc_df.empty:
         return pd.DataFrame()
 
-    # Filter to at-bat events
+    # Filter to at-bat events (rows where a PA concluded)
     batted = sc_df.dropna(subset=["events"])
+
+    if batted.empty:
+        return pd.DataFrame()
+
+    # Identify pitchers: players whose ID appears more as 'pitcher' than 'batter'
+    pitcher_counts = sc_df["pitcher"].value_counts()
+    batter_counts = sc_df["batter"].value_counts()
+    pitcher_ids = set()
+    for pid in pitcher_counts.index:
+        if pitcher_counts.get(pid, 0) > batter_counts.get(pid, 0):
+            pitcher_ids.add(pid)
+    batted = batted[~batted["batter"].isin(pitcher_ids)]
 
     if batted.empty:
         return pd.DataFrame()
@@ -77,73 +92,191 @@ def compute_batting_leaders(sc_df: pd.DataFrame) -> pd.DataFrame:
     hits = ["single", "double", "triple", "home_run"]
 
     grouped = batted.groupby("batter").agg(
-        Name=("player_name", "first"),
         PA=("events", "count"),
         H=("events", lambda x: x.isin(hits).sum()),
+        _2B=("events", lambda x: (x == "double").sum()),
+        _3B=("events", lambda x: (x == "triple").sum()),
         HR=("events", lambda x: (x == "home_run").sum()),
         BB=("events", lambda x: (x == "walk").sum()),
         SO=("events", lambda x: (x == "strikeout").sum()),
+        HBP=("events", lambda x: (x == "hit_by_pitch").sum()),
+        SF=("events", lambda x: (x == "sac_fly").sum()),
         AVG_EV=("launch_speed", "mean"),
         MAX_EV=("launch_speed", "max"),
     ).reset_index()
 
-    grouped["AVG"] = (grouped["H"] / grouped["PA"]).round(3)
+    # Lookup real batter names from MLB API
+    batter_ids = grouped["batter"].tolist()
+    name_map = lookup_player_names(batter_ids)
+    grouped["Name"] = grouped["batter"].map(name_map).fillna("Unknown")
+
+    # Compute AB (PA minus BB, HBP, SF)
+    grouped["AB"] = grouped["PA"] - grouped["BB"] - grouped["HBP"] - grouped["SF"]
+    grouped["AB"] = grouped["AB"].clip(lower=1)
+
+    grouped["AVG"] = (grouped["H"] / grouped["AB"]).round(3)
     grouped["HR_PA"] = (grouped["HR"] / grouped["PA"]).round(3)
+    grouped["OBP"] = ((grouped["H"] + grouped["BB"] + grouped["HBP"]) / grouped["PA"]).round(3)
+
+    # SLG = TB / AB
+    grouped["TB"] = (
+        (grouped["H"] - grouped["_2B"] - grouped["_3B"] - grouped["HR"])  # singles
+        + grouped["_2B"] * 2 + grouped["_3B"] * 3 + grouped["HR"] * 4
+    )
+    grouped["SLG"] = (grouped["TB"] / grouped["AB"]).round(3)
+    grouped["OPS"] = (grouped["OBP"] + grouped["SLG"]).round(3)
 
     return grouped.sort_values("PA", ascending=False).reset_index(drop=True)
 
 
 # ---------------------------------------------------------------------------
-# Pitching
+# Pitching — from Statcast
 # ---------------------------------------------------------------------------
 
-@st.cache_data(ttl=900, show_spinner=False)
-def get_pitching_stats(start_date: str, end_date: str, qual: int = 0) -> pd.DataFrame:
-    """Pull FanGraphs pitching leaderboard."""
-    try:
-        start_dt = datetime.datetime.strptime(start_date, "%Y-%m-%d")
-        end_dt = datetime.datetime.strptime(end_date, "%Y-%m-%d")
-        start_year = start_dt.year
-        end_year = end_dt.year
-
-        df = pitching_stats(start_year, end_year, qual=qual)
-
-        if df is None or df.empty:
-            return pd.DataFrame()
-
-        df.columns = [c.strip() for c in df.columns]
-
-        return df
-    except Exception as e:
-        st.warning(f"Could not load pitching stats: {e}")
-        return pd.DataFrame()
-
-
 def compute_pitching_leaders(sc_df: pd.DataFrame) -> pd.DataFrame:
-    """Aggregate Statcast data into per-pitcher metrics (K/9, whiff rate)."""
+    """Aggregate Statcast data into per-pitcher metrics."""
     if sc_df.empty:
         return pd.DataFrame()
 
+    hits = ["single", "double", "triple", "home_run"]
+
     grouped = sc_df.groupby("pitcher").agg(
-        Name=("player_name", "first"),
+        Name=("player_name", "first"),  # player_name IS the pitcher in Statcast
         TotalPitches=("pitch_type", "count"),
-        SwStr=("description", lambda x: x.isin(["swinging_strike", "swinging_strike_blocked"]).sum()),
+        SwStr=("description", lambda x: x.isin([
+            "swinging_strike", "swinging_strike_blocked"
+        ]).sum()),
         Strikeouts=("events", lambda x: (x == "strikeout").sum()),
-        IP_proxy=("events", lambda x: x.notna().sum()),  # rough proxy
+        BF=("events", lambda x: x.notna().sum()),
+        H=("events", lambda x: x.isin(hits).sum()),
+        HR=("events", lambda x: (x == "home_run").sum()),
+        BB=("events", lambda x: (x == "walk").sum()),
+        HBP=("events", lambda x: (x == "hit_by_pitch").sum()),
     ).reset_index()
 
     grouped["WhiffRate"] = (grouped["SwStr"] / grouped["TotalPitches"] * 100).round(1)
-    # K/9 approximation: (K / batters faced) * ~27
-    grouped["K9"] = (grouped["Strikeouts"] / grouped["IP_proxy"] * 27).round(1)
+
+    # Estimate IP: ~3 batters faced per inning
+    grouped["IP_est"] = (grouped["BF"] / 3).round(1).clip(lower=0.1)
+
+    # K/9
+    grouped["K9"] = (grouped["Strikeouts"] / grouped["IP_est"] * 9).round(1)
+
+    # ERA estimate: use runs created approach
+    # Approximate earned runs = 0.5*H + 0.33*BB + 0.33*HBP + 1.4*HR (rough linear weight)
+    grouped["ER_est"] = (
+        0.5 * grouped["H"] + 0.33 * grouped["BB"]
+        + 0.33 * grouped["HBP"] + 1.4 * grouped["HR"]
+    )
+    grouped["ERA"] = (grouped["ER_est"] / grouped["IP_est"] * 9).round(2)
+
+    # WHIP
+    grouped["WHIP"] = ((grouped["H"] + grouped["BB"]) / grouped["IP_est"]).round(2)
 
     return grouped.sort_values("TotalPitches", ascending=False).reset_index(drop=True)
+
+
+# ---------------------------------------------------------------------------
+# MLB Stats API — traditional season stats (replaces FanGraphs)
+# ---------------------------------------------------------------------------
+
+@st.cache_data(ttl=900, show_spinner=False)
+def get_mlb_batting_stats(season: int) -> pd.DataFrame:
+    """Fetch season batting stats from MLB Stats API."""
+    url = (
+        f"{MLB_API_BASE}/stats"
+        f"?stats=season&group=hitting&season={season}&sportId=1"
+        f"&limit=500&offset=0"
+        f"&sortStat=plateAppearances&order=desc"
+    )
+    try:
+        resp = requests.get(url, timeout=15)
+        resp.raise_for_status()
+        data = resp.json()
+        rows = []
+        for split in data.get("stats", []):
+            for entry in split.get("splits", []):
+                s = entry.get("stat", {})
+                player = entry.get("player", {})
+                team = entry.get("team", {})
+                rows.append({
+                    "Name": player.get("fullName", ""),
+                    "Team": team.get("abbreviation", ""),
+                    "G": s.get("gamesPlayed", 0),
+                    "PA": s.get("plateAppearances", 0),
+                    "AB": s.get("atBats", 0),
+                    "H": s.get("hits", 0),
+                    "2B": s.get("doubles", 0),
+                    "3B": s.get("triples", 0),
+                    "HR": s.get("homeRuns", 0),
+                    "RBI": s.get("rbi", 0),
+                    "BB": s.get("baseOnBalls", 0),
+                    "SO": s.get("strikeOuts", 0),
+                    "SB": s.get("stolenBases", 0),
+                    "AVG": float(s.get("avg", "0") or "0"),
+                    "OBP": float(s.get("obp", "0") or "0"),
+                    "SLG": float(s.get("slg", "0") or "0"),
+                    "OPS": float(s.get("ops", "0") or "0"),
+                })
+        return pd.DataFrame(rows)
+    except Exception as e:
+        st.warning(f"Could not load MLB batting stats: {e}")
+        return pd.DataFrame()
+
+
+@st.cache_data(ttl=900, show_spinner=False)
+def get_mlb_pitching_stats(season: int) -> pd.DataFrame:
+    """Fetch season pitching stats from MLB Stats API."""
+    url = (
+        f"{MLB_API_BASE}/stats"
+        f"?stats=season&group=pitching&season={season}&sportId=1"
+        f"&limit=500&offset=0"
+        f"&sortStat=inningsPitched&order=desc"
+    )
+    try:
+        resp = requests.get(url, timeout=15)
+        resp.raise_for_status()
+        data = resp.json()
+        rows = []
+        for split in data.get("stats", []):
+            for entry in split.get("splits", []):
+                s = entry.get("stat", {})
+                player = entry.get("player", {})
+                team = entry.get("team", {})
+
+                ip_str = s.get("inningsPitched", "0")
+                ip = float(ip_str) if ip_str else 0.0
+
+                rows.append({
+                    "Name": player.get("fullName", ""),
+                    "Team": team.get("abbreviation", ""),
+                    "W": s.get("wins", 0),
+                    "L": s.get("losses", 0),
+                    "ERA": float(s.get("era", "0") or "0"),
+                    "G": s.get("gamesPlayed", 0),
+                    "GS": s.get("gamesStarted", 0),
+                    "IP": ip,
+                    "SO": s.get("strikeOuts", 0),
+                    "BB": s.get("baseOnBalls", 0),
+                    "H": s.get("hits", 0),
+                    "HR": s.get("homeRuns", 0),
+                    "WHIP": float(s.get("whip", "0") or "0"),
+                    "K9": float(s.get("strikeoutsPer9Inn", "0") or "0"),
+                    "BB9": float(s.get("walksPer9Inn", "0") or "0"),
+                    "HR9": float(s.get("homeRunsPer9", "0") or "0"),
+                    "AVG": float(s.get("avg", "0") or "0"),
+                })
+        return pd.DataFrame(rows)
+    except Exception as e:
+        st.warning(f"Could not load MLB pitching stats: {e}")
+        return pd.DataFrame()
 
 
 # ---------------------------------------------------------------------------
 # MLB Stats API — live games, scores, matchups
 # ---------------------------------------------------------------------------
 
-@st.cache_data(ttl=120, show_spinner=False)  # 2-min cache for live data
+@st.cache_data(ttl=120, show_spinner=False)
 def get_todays_games() -> list[dict]:
     """Fetch today's MLB schedule with scores."""
     today = datetime.date.today().isoformat()
@@ -166,7 +299,6 @@ def get_todays_games() -> list[dict]:
                     "home_record": f'{g["teams"]["home"].get("leagueRecord", {}).get("wins", 0)}-{g["teams"]["home"].get("leagueRecord", {}).get("losses", 0)}',
                     "venue": g.get("venue", {}).get("name", ""),
                 }
-                # Probable pitchers
                 away_pitcher = g["teams"]["away"].get("probablePitcher", {})
                 home_pitcher = g["teams"]["home"].get("probablePitcher", {})
                 game["away_pitcher"] = away_pitcher.get("fullName", "TBD")
@@ -181,14 +313,26 @@ def get_todays_games() -> list[dict]:
 @st.cache_data(ttl=300, show_spinner=False)
 def get_standings() -> pd.DataFrame:
     """Fetch current MLB standings."""
-    url = f"{MLB_API_BASE}/standings?leagueId=103,104&season={datetime.date.today().year}&standingsTypes=regularSeason"
+    year = datetime.date.today().year
+    url = (
+        f"{MLB_API_BASE}/standings"
+        f"?leagueId=103,104&season={year}"
+        f"&standingsTypes=regularSeason"
+        f"&hydrate=division,league"
+    )
     try:
         resp = requests.get(url, timeout=10)
         resp.raise_for_status()
         data = resp.json()
         rows = []
         for record in data.get("records", []):
-            division = record.get("division", {}).get("name", "")
+            league_name = record.get("league", {}).get("name", "")
+            div_name = record.get("division", {}).get("name", "")
+            if league_name and league_name not in div_name:
+                division = f"{league_name} {div_name}"
+            else:
+                division = div_name if div_name else league_name
+
             for team in record.get("teamRecords", []):
                 rows.append({
                     "Team": team["team"]["name"],
@@ -198,7 +342,6 @@ def get_standings() -> pd.DataFrame:
                     "PCT": float(team["winningPercentage"]),
                     "GB": team.get("gamesBack", "-"),
                     "Streak": team.get("streak", {}).get("streakCode", ""),
-                    "L10": f'{team.get("records", {}).get("splitRecords", [{}])[0].get("wins", "")}-{team.get("records", {}).get("splitRecords", [{}])[0].get("losses", "")}',
                 })
         return pd.DataFrame(rows)
     except Exception as e:
