@@ -49,11 +49,15 @@ def lookup_player_names(player_ids: list[int]) -> dict[int, str]:
 
 @st.cache_data(ttl=600, show_spinner=False)
 def get_statcast_data(start_date: str, end_date: str) -> pd.DataFrame:
-    """Pull Statcast pitch-level data."""
+    """Pull Statcast pitch-level data (regular season only)."""
     try:
         df = statcast(start_dt=start_date, end_dt=end_date)
         if df is None or df.empty:
             return pd.DataFrame()
+        # Filter to regular season games only — excludes spring training (S),
+        # postseason (F/D/L/W), and all-star (A) data that inflates stats.
+        if "game_type" in df.columns:
+            df = df[df["game_type"] == "R"]
         return df
     except Exception as e:
         st.warning(f"Could not load Statcast data: {e}")
@@ -66,7 +70,8 @@ def get_statcast_data(start_date: str, end_date: str) -> pd.DataFrame:
 
 def compute_batting_leaders(sc_df: pd.DataFrame) -> pd.DataFrame:
     """Aggregate Statcast pitch-level data into per-batter stats.
-    Filters out pitchers and resolves correct batter names via MLB API.
+    Filters out pitchers, deduplicates plate appearances, and resolves
+    correct batter names via MLB API.
     """
     if sc_df.empty:
         return pd.DataFrame()
@@ -76,6 +81,14 @@ def compute_batting_leaders(sc_df: pd.DataFrame) -> pd.DataFrame:
 
     if batted.empty:
         return pd.DataFrame()
+
+    # CRITICAL: Deduplicate plate appearances.
+    # Statcast can have duplicate rows or multiple pitches with the events
+    # field set. Keep only one row per PA (game + at_bat_number + batter).
+    dedup_cols = ["game_pk", "at_bat_number", "batter"]
+    available_dedup = [c for c in dedup_cols if c in batted.columns]
+    if len(available_dedup) == len(dedup_cols):
+        batted = batted.drop_duplicates(subset=dedup_cols, keep="last")
 
     # Identify pitchers: players whose ID appears more as 'pitcher' than 'batter'
     pitcher_counts = sc_df["pitcher"].value_counts()
@@ -101,14 +114,35 @@ def compute_batting_leaders(sc_df: pd.DataFrame) -> pd.DataFrame:
         SO=("events", lambda x: (x == "strikeout").sum()),
         HBP=("events", lambda x: (x == "hit_by_pitch").sum()),
         SF=("events", lambda x: (x == "sac_fly").sum()),
-        AVG_EV=("launch_speed", "mean"),
-        MAX_EV=("launch_speed", "max"),
     ).reset_index()
+
+    # Calculate exit velocity from batted ball events only (bb_type not null)
+    bbe = sc_df.dropna(subset=["launch_speed", "bb_type"])
+    if not bbe.empty:
+        ev_stats = bbe.groupby("batter")["launch_speed"].agg(
+            AVG_EV="mean", MAX_EV="max"
+        ).reset_index()
+        grouped = grouped.merge(ev_stats, on="batter", how="left")
+    else:
+        grouped["AVG_EV"] = None
+        grouped["MAX_EV"] = None
 
     # Lookup real batter names from MLB API
     batter_ids = grouped["batter"].tolist()
     name_map = lookup_player_names(batter_ids)
     grouped["Name"] = grouped["batter"].map(name_map).fillna("Unknown")
+
+    # Derive team: Top inning = away team batting, Bot = home team
+    if "inning_topbot" in batted.columns and "home_team" in batted.columns:
+        def _get_team(sub):
+            row = sub.iloc[0]
+            if row.get("inning_topbot") == "Top":
+                return row.get("away_team", "")
+            return row.get("home_team", "")
+        team_map = batted.groupby("batter").apply(_get_team, include_groups=False)
+        grouped["Team"] = grouped["batter"].map(team_map).fillna("")
+    else:
+        grouped["Team"] = ""
 
     # Compute AB (PA minus BB, HBP, SF)
     grouped["AB"] = grouped["PA"] - grouped["BB"] - grouped["HBP"] - grouped["SF"]
@@ -140,19 +174,46 @@ def compute_pitching_leaders(sc_df: pd.DataFrame) -> pd.DataFrame:
 
     hits = ["single", "double", "triple", "home_run"]
 
-    grouped = sc_df.groupby("pitcher").agg(
-        Name=("player_name", "first"),  # player_name IS the pitcher in Statcast
+    # For event-level stats (BF, H, K, etc.), deduplicate plate appearances
+    # but keep all pitches for pitch-level stats (SwStr, TotalPitches)
+    events_df = sc_df.dropna(subset=["events"])
+    dedup_cols = ["game_pk", "at_bat_number", "batter"]
+    available_dedup = [c for c in dedup_cols if c in events_df.columns]
+    if len(available_dedup) == len(dedup_cols):
+        events_df = events_df.drop_duplicates(subset=dedup_cols, keep="last")
+
+    # Pitch-level aggregates (all pitches, no dedup)
+    pitch_agg = sc_df.groupby("pitcher").agg(
+        Name=("player_name", "first"),
         TotalPitches=("pitch_type", "count"),
         SwStr=("description", lambda x: x.isin([
             "swinging_strike", "swinging_strike_blocked"
         ]).sum()),
+    ).reset_index()
+
+    # Event-level aggregates (deduplicated PAs)
+    event_agg = events_df.groupby("pitcher").agg(
         Strikeouts=("events", lambda x: (x == "strikeout").sum()),
-        BF=("events", lambda x: x.notna().sum()),
+        BF=("events", "count"),
         H=("events", lambda x: x.isin(hits).sum()),
         HR=("events", lambda x: (x == "home_run").sum()),
         BB=("events", lambda x: (x == "walk").sum()),
         HBP=("events", lambda x: (x == "hit_by_pitch").sum()),
     ).reset_index()
+
+    grouped = pitch_agg.merge(event_agg, on="pitcher", how="left").fillna(0)
+
+    # Derive pitcher's team: Top inning = home team pitching, Bot = away team
+    if "inning_topbot" in sc_df.columns and "home_team" in sc_df.columns:
+        def _get_pitcher_team(sub):
+            row = sub.iloc[0]
+            if row.get("inning_topbot") == "Top":
+                return row.get("home_team", "")
+            return row.get("away_team", "")
+        p_team_map = sc_df.groupby("pitcher").apply(_get_pitcher_team, include_groups=False)
+        grouped["Team"] = grouped["pitcher"].map(p_team_map).fillna("")
+    else:
+        grouped["Team"] = ""
 
     grouped["WhiffRate"] = (grouped["SwStr"] / grouped["TotalPitches"] * 100).round(1)
 
@@ -188,6 +249,7 @@ def get_mlb_batting_stats(season: int) -> pd.DataFrame:
         f"?stats=season&group=hitting&season={season}&sportId=1"
         f"&limit=500&offset=0"
         f"&sortStat=plateAppearances&order=desc"
+        f"&hydrate=team"
     )
     try:
         resp = requests.get(url, timeout=15)
@@ -232,6 +294,7 @@ def get_mlb_pitching_stats(season: int) -> pd.DataFrame:
         f"?stats=season&group=pitching&season={season}&sportId=1"
         f"&limit=500&offset=0"
         f"&sortStat=inningsPitched&order=desc"
+        f"&hydrate=team"
     )
     try:
         resp = requests.get(url, timeout=15)
@@ -277,10 +340,21 @@ def get_mlb_pitching_stats(season: int) -> pd.DataFrame:
 # ---------------------------------------------------------------------------
 
 @st.cache_data(ttl=120, show_spinner=False)
-def get_todays_games() -> list[dict]:
-    """Fetch today's MLB schedule with scores."""
-    today = datetime.date.today().isoformat()
-    url = f"{MLB_API_BASE}/schedule?sportId=1&date={today}&hydrate=linescore,team,probablePitcher"
+def get_todays_games() -> tuple[str, list[dict]]:
+    """Fetch MLB schedule with scores.
+    Before 7 AM local time, show yesterday's games so late-night final
+    scores stay visible. Returns (label, games).
+    """
+    now = datetime.datetime.now()
+    if now.hour < 7:
+        target = (now - datetime.timedelta(days=1)).date()
+        label = "Yesterday's Games"
+    else:
+        target = now.date()
+        label = "Today's Games"
+
+    date_str = target.isoformat()
+    url = f"{MLB_API_BASE}/schedule?sportId=1&date={date_str}&hydrate=linescore,team,probablePitcher"
     try:
         resp = requests.get(url, timeout=10)
         resp.raise_for_status()
@@ -288,9 +362,24 @@ def get_todays_games() -> list[dict]:
         games = []
         for date_entry in data.get("dates", []):
             for g in date_entry.get("games", []):
+                # Parse game time — API gives UTC, convert to EST
+                game_time_str = ""
+                game_date_utc = g.get("gameDate", "")
+                status_detail = g["status"]["detailedState"]
+                if game_date_utc:
+                    try:
+                        utc_dt = datetime.datetime.fromisoformat(
+                            game_date_utc.replace("Z", "+00:00")
+                        )
+                        est_dt = utc_dt - datetime.timedelta(hours=4)
+                        game_time_str = est_dt.strftime("%I:%M %p ET").lstrip("0")
+                    except Exception:
+                        game_time_str = ""
+
                 game = {
                     "game_id": g["gamePk"],
-                    "status": g["status"]["detailedState"],
+                    "status": status_detail,
+                    "game_time": game_time_str,
                     "away_team": g["teams"]["away"]["team"]["name"],
                     "home_team": g["teams"]["home"]["team"]["name"],
                     "away_score": g["teams"]["away"].get("score", 0),
@@ -304,10 +393,10 @@ def get_todays_games() -> list[dict]:
                 game["away_pitcher"] = away_pitcher.get("fullName", "TBD")
                 game["home_pitcher"] = home_pitcher.get("fullName", "TBD")
                 games.append(game)
-        return games
+        return label, games
     except Exception as e:
-        st.warning(f"Could not load today's games: {e}")
-        return []
+        st.warning(f"Could not load games: {e}")
+        return label, []
 
 
 @st.cache_data(ttl=300, show_spinner=False)

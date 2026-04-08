@@ -29,6 +29,33 @@ st.markdown("""
     footer {visibility: hidden;}
     header {visibility: hidden;}
 
+    /* ---- Mobile: convert sidebar to top nav ---- */
+    @media (max-width: 768px) {
+        section[data-testid="stSidebar"] {
+            min-width: 100% !important;
+            width: 100% !important;
+            position: relative !important;
+            top: 0 !important;
+            background: #0F0F23 !important;
+        }
+        section[data-testid="stSidebar"] .stRadio > div {
+            display: flex !important;
+            flex-direction: row !important;
+            flex-wrap: wrap !important;
+            gap: 6px !important;
+        }
+        section[data-testid="stSidebar"] .stRadio label {
+            flex: 1 1 auto !important;
+            text-align: center !important;
+            min-width: 80px !important;
+            padding: 10px 8px !important;
+            font-size: 0.85rem !important;
+        }
+        .game-card .team-name { font-size: 0.9rem !important; }
+        .game-card .score { font-size: 1.4rem !important; }
+        .player-row { flex-direction: column !important; gap: 6px !important; }
+    }
+
     /* ---- Sidebar ---- */
     section[data-testid="stSidebar"] {
         background: linear-gradient(180deg, #0F0F23 0%, #1A1A2E 100%);
@@ -195,7 +222,6 @@ st.markdown("""
         padding: 14px 18px;
         margin-bottom: 8px;
         display: flex;
-        justify-content: space-between;
         align-items: center;
     }
 
