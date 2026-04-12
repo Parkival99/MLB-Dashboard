@@ -3,11 +3,14 @@
 import datetime
 import streamlit as st
 import pandas as pd
+import plotly.graph_objects as go
 from data_loader import (
     get_todays_games,
     get_statcast_data,
     compute_batting_leaders,
     compute_pitching_leaders,
+    compute_batter_daily_stats,
+    get_pitcher_game_log,
 )
 
 # Team colors: (primary for gradient, text color for name visibility)
@@ -132,15 +135,15 @@ def _render_game_card(game: dict):
         f'box-shadow:0 4px 15px rgba(0,0,0,0.3);">'
         f'<div style="text-align:center;font-size:0.75rem;color:#8888AA;text-transform:uppercase;letter-spacing:1px;margin-bottom:8px;">'
         f'{status_text}</div>'
-        f'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">'
-        f'<div>'
+        f'<div style="display:flex;align-items:center;margin-bottom:8px;">'
+        f'<div style="flex:1;min-width:0;">'
         f'<div style="font-weight:600;font-size:1.1rem;color:{away_text};">{game["away_team"]}</div>'
         f'<div style="font-size:0.8rem;color:#8888AA;">{game["away_record"]}</div>'
         f'<div style="font-size:0.85rem;color:#AAAACC;">SP: {game["away_pitcher"]}</div>'
         f'</div>'
-        f'<div style="font-size:1.8rem;font-weight:700;color:#EAEAEA;text-align:center;">'
+        f'<div class="game-score" style="padding:0 10px;font-size:1.6rem;font-weight:700;color:#EAEAEA;text-align:center;white-space:nowrap;">'
         f'{game["away_score"]} - {game["home_score"]}</div>'
-        f'<div style="text-align:right;">'
+        f'<div style="flex:1;min-width:0;text-align:right;">'
         f'<div style="font-weight:600;font-size:1.1rem;color:{home_text};">{game["home_team"]}</div>'
         f'<div style="font-size:0.8rem;color:#8888AA;">{game["home_record"]}</div>'
         f'<div style="font-size:0.85rem;color:#AAAACC;">SP: {game["home_pitcher"]}</div>'
@@ -193,7 +196,6 @@ def render():
                     st.markdown("### 🔥 Hottest Hitters")
                     hot = qualified.nlargest(5, "OPS")
                     for _, row in hot.iterrows():
-
                         img = _team_logo_img(row.get("Team", ""))
                         ops_val = row.get("OPS", 0)
                         st.markdown(
@@ -207,12 +209,45 @@ def render():
                             f'</div>',
                             unsafe_allow_html=True,
                         )
+                        with st.expander("📊 7-Day Breakdown"):
+                            daily = compute_batter_daily_stats(sc, int(row["batter"]))
+                            if not daily.empty:
+                                fig = go.Figure()
+                                fig.add_trace(go.Scatter(
+                                    x=daily["game_date"], y=daily["OPS"],
+                                    mode="lines+markers",
+                                    line=dict(color="#E63946", width=2),
+                                    marker=dict(size=8, color="#E63946"),
+                                    customdata=daily[["TB", "H_AB", "SO", "HR"]].values,
+                                    hovertemplate=(
+                                        "<b>%{x|%a %m/%d}</b><br>"
+                                        "OPS: %{y:.3f}<br>"
+                                        "Total Bases: %{customdata[0]}<br>"
+                                        "H-AB: %{customdata[1]}<br>"
+                                        "Strikeouts: %{customdata[2]}<br>"
+                                        "Home Runs: %{customdata[3]}"
+                                        "<extra></extra>"
+                                    ),
+                                ))
+                                fig.update_layout(
+                                    height=220,
+                                    margin=dict(l=40, r=20, t=10, b=40),
+                                    xaxis_title="Date",
+                                    yaxis_title="OPS",
+                                    paper_bgcolor="rgba(0,0,0,0)",
+                                    plot_bgcolor="rgba(0,0,0,0)",
+                                    font=dict(color="#8888AA"),
+                                    xaxis=dict(gridcolor="#2A2A4A"),
+                                    yaxis=dict(gridcolor="#2A2A4A"),
+                                )
+                                st.plotly_chart(fig, use_container_width=True)
+                            else:
+                                st.caption("No game-by-game data available.")
 
                 with cold_col:
                     st.markdown("### 🥶 Coldest Hitters")
                     cold = qualified.nsmallest(5, "OPS")
                     for _, row in cold.iterrows():
-
                         img = _team_logo_img(row.get("Team", ""))
                         ops_val = row.get("OPS", 0)
                         st.markdown(
@@ -226,6 +261,40 @@ def render():
                             f'</div>',
                             unsafe_allow_html=True,
                         )
+                        with st.expander("📊 7-Day Breakdown"):
+                            daily = compute_batter_daily_stats(sc, int(row["batter"]))
+                            if not daily.empty:
+                                fig = go.Figure()
+                                fig.add_trace(go.Scatter(
+                                    x=daily["game_date"], y=daily["OPS"],
+                                    mode="lines+markers",
+                                    line=dict(color="#1E90FF", width=2),
+                                    marker=dict(size=8, color="#1E90FF"),
+                                    customdata=daily[["TB", "H_AB", "SO", "HR"]].values,
+                                    hovertemplate=(
+                                        "<b>%{x|%a %m/%d}</b><br>"
+                                        "OPS: %{y:.3f}<br>"
+                                        "Total Bases: %{customdata[0]}<br>"
+                                        "H-AB: %{customdata[1]}<br>"
+                                        "Strikeouts: %{customdata[2]}<br>"
+                                        "Home Runs: %{customdata[3]}"
+                                        "<extra></extra>"
+                                    ),
+                                ))
+                                fig.update_layout(
+                                    height=220,
+                                    margin=dict(l=40, r=20, t=10, b=40),
+                                    xaxis_title="Date",
+                                    yaxis_title="OPS",
+                                    paper_bgcolor="rgba(0,0,0,0)",
+                                    plot_bgcolor="rgba(0,0,0,0)",
+                                    font=dict(color="#8888AA"),
+                                    xaxis=dict(gridcolor="#2A2A4A"),
+                                    yaxis=dict(gridcolor="#2A2A4A"),
+                                )
+                                st.plotly_chart(fig, use_container_width=True)
+                            else:
+                                st.caption("No game-by-game data available.")
             else:
                 st.info("Not enough qualified plate appearances in the last 7 days.")
         else:
@@ -252,7 +321,6 @@ def render():
                     st.markdown("### 💨 Highest Whiff Rate")
                     top_whiff = qual_p.nlargest(5, "WhiffRate")
                     for _, row in top_whiff.iterrows():
-
                         img = _team_logo_img(row.get("Team", ""))
                         era_val = row.get("ERA", 0)
                         st.markdown(
@@ -266,12 +334,45 @@ def render():
                             f'</div>',
                             unsafe_allow_html=True,
                         )
+                        with st.expander("📊 Season ERA Trend"):
+                            game_log = get_pitcher_game_log(int(row["pitcher"]), datetime.date.today().year)
+                            if not game_log.empty:
+                                fig = go.Figure()
+                                fig.add_trace(go.Scatter(
+                                    x=game_log["date"], y=game_log["ERA"],
+                                    mode="lines+markers",
+                                    line=dict(color="#E63946", width=2),
+                                    marker=dict(size=8, color="#E63946"),
+                                    customdata=game_log[["IP", "SO", "ER", "opponent"]].values,
+                                    hovertemplate=(
+                                        "<b>%{x|%m/%d}</b><br>"
+                                        "ERA: %{y:.2f}<br>"
+                                        "IP: %{customdata[0]}<br>"
+                                        "K: %{customdata[1]}<br>"
+                                        "ER: %{customdata[2]}<br>"
+                                        "vs %{customdata[3]}"
+                                        "<extra></extra>"
+                                    ),
+                                ))
+                                fig.update_layout(
+                                    height=220,
+                                    margin=dict(l=40, r=20, t=10, b=40),
+                                    xaxis_title="Date",
+                                    yaxis_title="Cumulative ERA",
+                                    paper_bgcolor="rgba(0,0,0,0)",
+                                    plot_bgcolor="rgba(0,0,0,0)",
+                                    font=dict(color="#8888AA"),
+                                    xaxis=dict(gridcolor="#2A2A4A"),
+                                    yaxis=dict(gridcolor="#2A2A4A"),
+                                )
+                                st.plotly_chart(fig, use_container_width=True)
+                            else:
+                                st.caption("No season game log available.")
 
                 with k_col:
                     st.markdown("### ❌ Highest K/9")
                     top_k9 = qual_p.nlargest(5, "K9")
                     for _, row in top_k9.iterrows():
-
                         img = _team_logo_img(row.get("Team", ""))
                         era_val = row.get("ERA", 0)
                         st.markdown(
@@ -285,3 +386,37 @@ def render():
                             f'</div>',
                             unsafe_allow_html=True,
                         )
+                        with st.expander("📊 Season ERA Trend"):
+                            game_log = get_pitcher_game_log(int(row["pitcher"]), datetime.date.today().year)
+                            if not game_log.empty:
+                                fig = go.Figure()
+                                fig.add_trace(go.Scatter(
+                                    x=game_log["date"], y=game_log["ERA"],
+                                    mode="lines+markers",
+                                    line=dict(color="#E63946", width=2),
+                                    marker=dict(size=8, color="#E63946"),
+                                    customdata=game_log[["IP", "SO", "ER", "opponent"]].values,
+                                    hovertemplate=(
+                                        "<b>%{x|%m/%d}</b><br>"
+                                        "ERA: %{y:.2f}<br>"
+                                        "IP: %{customdata[0]}<br>"
+                                        "K: %{customdata[1]}<br>"
+                                        "ER: %{customdata[2]}<br>"
+                                        "vs %{customdata[3]}"
+                                        "<extra></extra>"
+                                    ),
+                                ))
+                                fig.update_layout(
+                                    height=220,
+                                    margin=dict(l=40, r=20, t=10, b=40),
+                                    xaxis_title="Date",
+                                    yaxis_title="Cumulative ERA",
+                                    paper_bgcolor="rgba(0,0,0,0)",
+                                    plot_bgcolor="rgba(0,0,0,0)",
+                                    font=dict(color="#8888AA"),
+                                    xaxis=dict(gridcolor="#2A2A4A"),
+                                    yaxis=dict(gridcolor="#2A2A4A"),
+                                )
+                                st.plotly_chart(fig, use_container_width=True)
+                            else:
+                                st.caption("No season game log available.")
