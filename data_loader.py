@@ -436,3 +436,111 @@ def get_standings() -> pd.DataFrame:
     except Exception as e:
         st.warning(f"Could not load standings: {e}")
         return pd.DataFrame()
+
+
+# ---------------------------------------------------------------------------
+# Per-game batting stats for a single batter (used in dashboard charts)
+# ---------------------------------------------------------------------------
+
+def compute_batter_daily_stats(sc_df: pd.DataFrame, batter_id: int) -> pd.DataFrame:
+    """Compute per-game-date batting stats for a specific batter from Statcast data."""
+    if sc_df.empty:
+        return pd.DataFrame()
+
+    batter_data = sc_df[sc_df["batter"] == batter_id].copy()
+    if batter_data.empty:
+        return pd.DataFrame()
+
+    events = batter_data.dropna(subset=["events"])
+    if events.empty:
+        return pd.DataFrame()
+
+    dedup_cols = ["game_pk", "at_bat_number", "batter"]
+    available = [c for c in dedup_cols if c in events.columns]
+    if len(available) == len(dedup_cols):
+        events = events.drop_duplicates(subset=dedup_cols, keep="last")
+
+    hits = ["single", "double", "triple", "home_run"]
+
+    daily = events.groupby("game_date").agg(
+        PA=("events", "count"),
+        H=("events", lambda x: x.isin(hits).sum()),
+        _2B=("events", lambda x: (x == "double").sum()),
+        _3B=("events", lambda x: (x == "triple").sum()),
+        HR=("events", lambda x: (x == "home_run").sum()),
+        BB=("events", lambda x: (x == "walk").sum()),
+        SO=("events", lambda x: (x == "strikeout").sum()),
+        HBP=("events", lambda x: (x == "hit_by_pitch").sum()),
+        SF=("events", lambda x: (x == "sac_fly").sum()),
+    ).reset_index()
+
+    daily["AB"] = (daily["PA"] - daily["BB"] - daily["HBP"] - daily["SF"]).clip(lower=1)
+    daily["TB"] = (
+        (daily["H"] - daily["_2B"] - daily["_3B"] - daily["HR"])
+        + daily["_2B"] * 2 + daily["_3B"] * 3 + daily["HR"] * 4
+    )
+    daily["H_AB"] = daily.apply(lambda r: f"{int(r['H'])}-{int(r['AB'])}", axis=1)
+
+    daily["game_date"] = pd.to_datetime(daily["game_date"])
+    daily = daily.sort_values("game_date")
+
+    # Cumulative OPS — smoother than volatile per-game OPS
+    cum_H = daily["H"].cumsum()
+    cum_BB = daily["BB"].cumsum()
+    cum_HBP = daily["HBP"].cumsum()
+    cum_SF = daily["SF"].cumsum()
+    cum_PA = daily["PA"].cumsum()
+    cum_AB = (cum_PA - cum_BB - cum_HBP - cum_SF).clip(lower=1)
+    cum_TB = daily["TB"].cumsum()
+    daily["OPS"] = (
+        (cum_H + cum_BB + cum_HBP) / cum_PA
+        + cum_TB / cum_AB
+    ).round(3)
+
+    return daily
+
+
+# ---------------------------------------------------------------------------
+# Pitcher game log (season) — for dashboard ERA charts
+# ---------------------------------------------------------------------------
+
+@st.cache_data(ttl=900, show_spinner=False)
+def get_pitcher_game_log(pitcher_id: int, season: int) -> pd.DataFrame:
+    """Fetch pitcher game log for the season from MLB Stats API."""
+    url = f"{MLB_API_BASE}/people/{pitcher_id}/stats?stats=gameLog&group=pitching&season={season}"
+    try:
+        resp = requests.get(url, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+        rows = []
+        for split_group in data.get("stats", []):
+            for entry in split_group.get("splits", []):
+                s = entry.get("stat", {})
+                game_date = entry.get("date", "")
+                opponent_obj = entry.get("opponent", {})
+                opponent = opponent_obj.get("abbreviation", opponent_obj.get("name", ""))
+
+                ip_str = s.get("inningsPitched", "0")
+                ip = float(ip_str) if ip_str else 0.0
+
+                rows.append({
+                    "date": game_date,
+                    "opponent": opponent,
+                    "IP": ip,
+                    "H": s.get("hits", 0),
+                    "ER": s.get("earnedRuns", 0),
+                    "BB": s.get("baseOnBalls", 0),
+                    "SO": s.get("strikeOuts", 0),
+                    "HR": s.get("homeRuns", 0),
+                    "pitches": s.get("numberOfPitches", 0),
+                })
+        df = pd.DataFrame(rows)
+        if not df.empty:
+            df["date"] = pd.to_datetime(df["date"])
+            df = df.sort_values("date")
+            df["cum_IP"] = df["IP"].cumsum()
+            df["cum_ER"] = df["ER"].cumsum()
+            df["ERA"] = (df["cum_ER"] / df["cum_IP"].clip(lower=0.1) * 9).round(2)
+        return df
+    except Exception:
+        return pd.DataFrame()

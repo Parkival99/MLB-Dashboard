@@ -85,6 +85,7 @@ st.markdown("""
     /* ---- Mobile tweaks ---- */
     @media (max-width: 768px) {
         .player-row { flex-wrap: wrap !important; gap: 6px !important; }
+        .game-score { font-size: 1.1rem !important; }
         div[data-testid="stHorizontalBlock"] .stRadio > div > label {
             padding: 8px 16px !important;
             font-size: 0.9rem !important;
