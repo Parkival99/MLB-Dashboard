@@ -209,7 +209,7 @@ def render():
                             f'</div>',
                             unsafe_allow_html=True,
                         )
-                        with st.expander("📊 7-Day Breakdown"):
+                        with st.expander("📊 7-Day Breakdown", key=f"hot_exp_{row['batter']}"):
                             daily = compute_batter_daily_stats(sc, int(row["batter"]))
                             if not daily.empty:
                                 fig = go.Figure()
@@ -240,7 +240,7 @@ def render():
                                     xaxis=dict(gridcolor="#2A2A4A"),
                                     yaxis=dict(gridcolor="#2A2A4A"),
                                 )
-                                st.plotly_chart(fig, use_container_width=True)
+                                st.plotly_chart(fig, use_container_width=True, key=f"hot_chart_{row['batter']}")
                             else:
                                 st.caption("No game-by-game data available.")
 
@@ -261,7 +261,7 @@ def render():
                             f'</div>',
                             unsafe_allow_html=True,
                         )
-                        with st.expander("📊 7-Day Breakdown"):
+                        with st.expander("📊 7-Day Breakdown", key=f"cold_exp_{row['batter']}"):
                             daily = compute_batter_daily_stats(sc, int(row["batter"]))
                             if not daily.empty:
                                 fig = go.Figure()
@@ -292,7 +292,7 @@ def render():
                                     xaxis=dict(gridcolor="#2A2A4A"),
                                     yaxis=dict(gridcolor="#2A2A4A"),
                                 )
-                                st.plotly_chart(fig, use_container_width=True)
+                                st.plotly_chart(fig, use_container_width=True, key=f"cold_chart_{row['batter']}")
                             else:
                                 st.caption("No game-by-game data available.")
             else:
@@ -334,7 +334,7 @@ def render():
                             f'</div>',
                             unsafe_allow_html=True,
                         )
-                        with st.expander("📊 Season ERA Trend"):
+                        with st.expander("📊 Season ERA Trend", key=f"whiff_exp_{row['pitcher']}"):
                             game_log = get_pitcher_game_log(int(row["pitcher"]), datetime.date.today().year)
                             if not game_log.empty:
                                 fig = go.Figure()
@@ -365,7 +365,7 @@ def render():
                                     xaxis=dict(gridcolor="#2A2A4A"),
                                     yaxis=dict(gridcolor="#2A2A4A"),
                                 )
-                                st.plotly_chart(fig, use_container_width=True)
+                                st.plotly_chart(fig, use_container_width=True, key=f"whiff_chart_{row['pitcher']}")
                             else:
                                 st.caption("No season game log available.")
 
@@ -386,7 +386,7 @@ def render():
                             f'</div>',
                             unsafe_allow_html=True,
                         )
-                        with st.expander("📊 Season ERA Trend"):
+                        with st.expander("📊 Season ERA Trend", key=f"k9_exp_{row['pitcher']}"):
                             game_log = get_pitcher_game_log(int(row["pitcher"]), datetime.date.today().year)
                             if not game_log.empty:
                                 fig = go.Figure()
@@ -417,6 +417,6 @@ def render():
                                     xaxis=dict(gridcolor="#2A2A4A"),
                                     yaxis=dict(gridcolor="#2A2A4A"),
                                 )
-                                st.plotly_chart(fig, use_container_width=True)
+                                st.plotly_chart(fig, use_container_width=True, key=f"k9_chart_{row['pitcher']}")
                             else:
                                 st.caption("No season game log available.")
